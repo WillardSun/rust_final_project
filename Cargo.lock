@@ -162,19 +162,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 
 [[package]]
-name = "final-project"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytes",
- "fastrand",
- "futures",
- "mini-redis",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
 name = "find-msvc-tools"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -567,6 +554,19 @@ name = "regex-syntax"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
+
+[[package]]
+name = "rust-final-project"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "fastrand",
+ "futures",
+ "mini-redis",
+ "tokio",
+ "tokio-util",
+]
 
 [[package]]
 name = "rustversion"

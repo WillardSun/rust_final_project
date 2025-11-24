@@ -5,7 +5,7 @@ use tokio::sync::broadcast::{self, Sender};
 use std::collections::{HashSet, HashMap};
 use std::sync::{Arc, Mutex, RwLock};
 
-use final_project::random_name;
+use rust_final_project::random_name;
 
 macro_rules! b {
     ($result:expr) => {
