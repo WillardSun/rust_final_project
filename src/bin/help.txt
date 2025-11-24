@@ -1,0 +1,8 @@
+Server commands
+  /name [NAME] - change user name to [NAME]
+  /join [NAME] - change current room to [NAME]
+  /users       - see current users in room
+  /allusers    - see all users in room
+  /rooms       - see current rooms
+  /help        - prints this message
+  /quit        - quits server

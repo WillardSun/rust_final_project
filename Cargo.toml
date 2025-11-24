@@ -1,8 +1,15 @@
+cargo-features = ["edition2024"]
+
 [package]
-name = "tokio_tutorial"
+name = "final-project"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 mini-redis = "0.4"
+bytes = "1"
+tokio-util = { version = "0.7.17", features = ["full"] }
+futures = "0.3.31"
+anyhow = "1.0.100"
+fastrand = "2.3.0"
