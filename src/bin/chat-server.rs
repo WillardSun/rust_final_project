@@ -1,9 +1,10 @@
-use futures::{SinkExt, StreamExt};
-use tokio::net::{TcpStream, TcpListener};
-use tokio_util::codec::{FramedRead, FramedWrite, LinesCodec};
+use axum::response::IntoResponse;
+use tokio::net::TcpListener;
 use tokio::sync::broadcast::{self, Sender};
 use std::collections::{HashSet, HashMap};
 use std::sync::{Arc, Mutex, RwLock};
+use axum::{routing, Router};
+use axum::extract::{ws::{Message, WebSocket, WebSocketUpgrade}, State};
 
 use rust_final_project::random_name;
 
@@ -126,66 +127,81 @@ impl Rooms{
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let listener = TcpListener::bind("127.0.0.1:6142").await?;
+    let listener = TcpListener::bind("0.0.0.0:6142").await?;
     let rooms = Rooms::new();
     let names = Names::new();
-    loop {
-        let (socket, _) = listener.accept().await?;
-        println!("New socket connected: {:?}", socket.peer_addr()?);
-        let names_clone = names.clone();
-        let rooms_clone = rooms.clone();
-        tokio::spawn (async move {
-            if let Err(e) = process(socket, rooms_clone, names_clone).await {
-                println!("Connction error: {}", e);
-            }
-        });
-    }
+
+    let app= Router::new()
+        .route("/ws", routing::any(ws_handler))
+        .with_state((rooms, names));
+
+    axum::serve(listener, app).await?;
+    Ok(())
 }
 
-async fn process(mut socket: TcpStream, rooms: Rooms, existing: Names) -> anyhow::Result<()> {
-    let (rd, wr) = socket.split();
-    let mut stream = FramedRead::new(rd, LinesCodec::new());
-    let mut sink = FramedWrite::new(wr, LinesCodec::new());
+async fn ws_handler(
+    ws: WebSocketUpgrade,
+    State((rooms, names)): State<(Rooms, Names)>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| async move {
+        if let Err(e) = process(socket, rooms, names).await {
+            eprintln!("connection error: {e}");
+        }
+    })
+}
 
+async fn process(mut socket: WebSocket, rooms: Rooms, existing: Names) -> anyhow::Result<()> {
     let mut user_name = existing.get_unique();
-
     let mut room_name = MAIN.to_owned();
     let mut tx = rooms.join(&room_name, &user_name);
     let mut rx = tx.subscribe();
 
-    let _ = tx.send(format!("{:?} has joined the chat.", user_name));
-    sink.send(HELP_MSG).await?;
+    let _ = tx.send(format!("{user_name} has joined the chat."));
+
+    let _ = socket.send(Message::Text(HELP_MSG.into())).await;
+
+    // main loop returns Result so `b!` can break with Err
     let result: anyhow::Result<()> = loop {
         tokio::select! {
-            user_msg = stream.next() => {
-                let user_msg = match user_msg {
+            msg = socket.recv() => {
+                let msg = match msg {
                     Some(msg) => b!(msg),
-                    None => break Ok(())
+                    None => break Ok(()), // client closed
                 };
-                if user_msg.starts_with("/join") {
-                    let mut itr = user_msg.split_ascii_whitespace();
-                    itr.next();
-                    let new_room = itr
-                        .collect::<Vec<&str>>()
-                        .join(" ")
-                        .to_owned();
-                    if new_room == room_name {
-                        b!(sink.send("You are already in this room.").await);
+
+                let user_msg = match msg {
+                    Message::Text(t) => t,
+                    Message::Binary(_) => continue,
+                    Message::Ping(p) => {
+                        b!(socket.send(Message::Pong(p)).await);
                         continue;
                     }
+                    Message::Pong(_) => continue,
+                    Message::Close(_) => break Ok(()),
+                };
+
+                if user_msg.starts_with("/join") {
+
+                    let mut itr = user_msg.split_ascii_whitespace();
+                    itr.next();
+                    let new_room = itr.collect::<Vec<&str>>().join(" ");
+
+                    if new_room == room_name {
+                        b!(socket.send(Message::Text("You are already in this room.".into())).await);
+                        continue;
+                    }
+
                     b!(tx.send(format!("{user_name} has left {room_name}.")));
                     tx = rooms.change(&room_name, &new_room, &user_name);
                     rx = tx.subscribe();
                     room_name = new_room;
                     b!(tx.send(format!("{user_name} has joined {room_name}.")));
-                }
+
+                } 
                 else if user_msg.starts_with("/name") {
                     let mut itr = user_msg.split_ascii_whitespace();
                     itr.next();
-                    let new_name = itr
-                        .collect::<Vec<&str>>()
-                        .join(" ")
-                        .to_owned();
+                    let new_name = itr.collect::<Vec<&str>>().join(" ");
                     let changed_name = existing.insert(new_name.clone());
                     if changed_name {
                         existing.remove(&user_name);
@@ -193,42 +209,48 @@ async fn process(mut socket: TcpStream, rooms: Rooms, existing: Names) -> anyhow
                         b!(tx.send(format!("{user_name} is now {new_name}")));
                         b!(tx.send(format!("Current names in room: {:?}", rooms.list_users(&room_name))));
                         user_name = new_name;
-                    }
+                    } 
                     else {
-                        b!(sink.send("Sorry, that name is taken.").await);
+                        b!(socket.send(Message::Text("Sorry, that name is taken.".into())).await);
                     }
-                }
+                } 
                 else if user_msg.starts_with("/allusers") {
-                    b!(sink.send(format!("All users: {:?}", existing.get_existing())).await);
-                }
+                    let users_str = format!("All users: {:?}", existing.get_existing());
+                    b!(socket.send(Message::Text(users_str.into())).await);
+                } 
                 else if user_msg.starts_with("/users") {
-                    b!(sink.send(format!("Users in current room: {:?}", rooms.list_users(&room_name))).await)
-                }
+                    let users_str = format!("Users in current room: {:?}", rooms.list_users(&room_name));
+                    b!(socket.send(Message::Text(users_str.into())).await);
+                } 
                 else if user_msg.starts_with("/rooms") {
-                    let rooms_list = rooms.get_existing()
+                    let rooms_list = rooms
+                        .get_existing()
                         .into_iter()
                         .map(|(name, count)| format!("{name} ({count})"))
                         .collect::<Vec<_>>()
                         .join(", ");
-                    b!(sink.send(format!("Current rooms: {rooms_list}")).await);
-                }
+                    let rooms_str = format!("Current rooms: {rooms_list}");
+                    b!(socket.send(Message::Text(rooms_str.into())).await);
+                } 
                 else if user_msg.starts_with("/help") {
-                    b!(sink.send(HELP_MSG).await);
-                }
+                    b!(socket.send(Message::Text(HELP_MSG.into())).await);
+                } 
                 else if user_msg.starts_with("/quit") {
                     break Ok(());
-                }
+                } 
                 else {
                     b!(tx.send(format!("{user_name}: {user_msg}")));
                 }
             },
+
             peer_msg = rx.recv() => {
                 let peer_msg = b!(peer_msg);
-                b!(sink.send(peer_msg).await);
+                b!(socket.send(Message::Text(peer_msg.into())).await);
             },
         }
     };
-    let _ = tx.send(format!("{:?} has left the chat.", user_name));
+
+    let _ = tx.send(format!("{user_name} has left the chat."));
     existing.remove(&user_name);
     rooms.leave(&room_name, &user_name);
     result

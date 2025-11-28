@@ -13,3 +13,11 @@ tokio-util = { version = "0.7.17", features = ["full"] }
 futures = "0.3.31"
 anyhow = "1.0.100"
 fastrand = "2.3.0"
+axum = { version = "0.8.7", features = ["ws"] }
+axum-extra = { version = "0.12.2", features = ["typed-header"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+headers = "0.4"
+tokio-tungstenite = "0.28.0"
+tower-http = { version = "0.6.1", features = ["fs", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

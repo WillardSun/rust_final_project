@@ -12,6 +12,6 @@ async fn main() -> Result<()> {
     let result = client.get("hello").await?;
 
     println!("got value from the server; result={:?}", result);
-
+    
     Ok(())
 }
