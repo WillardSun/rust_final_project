@@ -94,11 +94,25 @@ impl Rooms{
         self.leave(prev_room, user_name);
         return self.join(next_room, user_name);
     }
-    fn change_name(&self, room_name: &str, old_name: &str, new_name: &str) {
+    fn change_name(&self, room_name: &str, old_name: &str, new_name: &str) -> anyhow::Result<()> {
         let mut write_guard = self.0.write().unwrap();
         if let Some(room) = write_guard.get_mut(room_name) {
             room.users.remove(old_name);
             room.users.insert(new_name.to_owned());
+            Ok(())
+        }
+        else {
+            Err(anyhow::anyhow!("User not found"))
+        }
+    }
+    fn change_room_name(&self, old_name: &str, new_name: &str) -> anyhow::Result<()> {
+        let mut write_guard = self.0.write().unwrap();
+        if let Some(room) = write_guard.remove(old_name) {
+            write_guard.insert(new_name.to_owned(), room);
+            Ok(())
+        }
+        else {
+            Err(anyhow::anyhow!("Room not found"))
         }
     }
     fn list_users(&self, room_name: &str) -> Vec<String> {
@@ -149,6 +163,8 @@ async fn ws_handler(
         }
     })
 }
+
+//make it so that a /rename [ROOM] [NEW_NAME] command can be used to change room names
 
 async fn process(mut socket: WebSocket, rooms: Rooms, existing: Names) -> anyhow::Result<()> {
     let mut user_name = existing.get_unique();
@@ -205,7 +221,7 @@ async fn process(mut socket: WebSocket, rooms: Rooms, existing: Names) -> anyhow
                     let changed_name = existing.insert(new_name.clone());
                     if changed_name {
                         existing.remove(&user_name);
-                        rooms.change_name(&room_name, &user_name, &new_name);
+                        b!(rooms.change_name(&room_name, &user_name, &new_name));
                         b!(tx.send(format!("{user_name} is now {new_name}")));
                         b!(tx.send(format!("Current names in room: {:?}", rooms.list_users(&room_name))));
                         user_name = new_name;
@@ -232,6 +248,20 @@ async fn process(mut socket: WebSocket, rooms: Rooms, existing: Names) -> anyhow
                     let rooms_str = format!("Current rooms: {rooms_list}");
                     b!(socket.send(Message::Text(rooms_str.into())).await);
                 } 
+                else if user_msg.starts_with("/renameroom ") {
+                    let mut itr = user_msg.split_ascii_whitespace();
+                    itr.next();
+                    let new_room_name = itr.collect::<Vec<&str>>().join(" ");
+
+                    if rooms.0.read().unwrap().contains_key(&new_room_name) {
+                        b!(socket.send(Message::Text("Room name already exists.".into())).await);
+                        continue;
+                    }
+
+                    b!(rooms.change_room_name(&room_name, &new_room_name));
+                    b!(tx.send(format!("Room {room_name} has been renamed to {new_room_name}.")));
+                    room_name = new_room_name;
+                }
                 else if user_msg.starts_with("/help") {
                     b!(socket.send(Message::Text(HELP_MSG.into())).await);
                 } 
