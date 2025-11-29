@@ -91,11 +91,34 @@ cargo run --bin chat-server
 2. The client connects to `ws://localhost:6142/ws` by default
 3. Edit `WS_URL` in `index.html` to connect to remote servers
 
-### Features
-- Dark-themed UI with connection status indicator
-- Scrollable message log
-- Enter key or Send button to submit messages
-- All commands work through the input field
+Note: `index.html` is now implemented to auto-select the correct WebSocket protocol (wss/ws) based on the page's protocol. You do not need to manually edit `WS_URL`.
+
+---
+
+## Running with Cloudflared tunnels (quick)
+
+If you want to expose your local chat server and static site to the public internet for testing, you can use `cloudflared`.
+
+I included a helper script: `scripts/start_tunnels.sh` which does the following:
+
+- Starts a local static file server on port `8000` (if not already running).
+- Launches two ephemeral Cloudflared tunnels:
+  - one to `http://localhost:6142` (chat WebSocket server)
+  - one to `http://localhost:8000` (static files)
+- Parses the ephemeral `trycloudflare.com` URLs printed by Cloudflared and updates `index.html` to use the chat tunnel as the `WS_URL` (`wss://<host>/ws`).
+
+Usage:
+
+```bash
+chmod +x scripts/start_tunnels.sh
+./scripts/start_tunnels.sh
+```
+
+The script prints the public static URL (open this in your browser) and the WebSocket (WSS) URL it set in `index.html`.
+
+WSL note
+
+- If you run the repo inside WSL but installed `cloudflared` on Windows, either install `cloudflared` inside WSL (recommended) or call the Windows `cloudflared.exe` from WSL using the mounted path (e.g. `/mnt/c/Users/You/Downloads/cloudflared.exe`). See the script and earlier notes for details.
 
 ---
 
@@ -112,6 +135,8 @@ rust-final-project/
 │       ├── main.rs         # (alternative entry point)
 │       └── help.txt        # Command reference
 ├── index.html              # Web client UI
+├── scripts/
+│   └── start_tunnels.sh    # helper to expose ports via cloudflared
 ├── Cargo.toml              # Dependencies
 └── README.md               # This file
 ```

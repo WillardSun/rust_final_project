@@ -70,9 +70,10 @@
 </div>
 
 <script>
-  // CHANGE THIS to your server's IP if not localhost:
-  // Example: ws://192.168.1.22:6142/ws
-  const WS_URL = "ws://localhost:6142/ws";
+  // WS_URL: choose same-origin protocol (wss for https, ws for http)
+  // Uses the current page host so the client works both locally and
+  // when served via a tunnel (Cloudflared) without editing this file.
+  const WS_URL = (location.protocol === "https:" ? "wss:" : "ws:") + "//" + location.host + "/ws";
 
   const logElem = document.getElementById("log");
   const msgInput = document.getElementById("msgInput");
