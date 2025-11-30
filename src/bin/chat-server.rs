@@ -3,6 +3,8 @@ use tokio::net::TcpListener;
 use tokio::sync::broadcast::{self, Sender};
 use std::collections::{HashSet, HashMap};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::{SystemTime};
+use chrono::{Utc, TimeZone};
 use axum::{routing, Router};
 use axum::extract::{ws::{Message, WebSocket, WebSocketUpgrade}, State};
 
@@ -20,7 +22,22 @@ macro_rules! b {
 const HELP_MSG: &str = include_str!("help.txt");
 const MAIN: &str = "main";
 
-#[derive(Clone)]
+#[derive(Clone, Debug, serde::Serialize)]
+struct ChatMessage {
+    message: String,
+    timestamp: i64,
+}
+
+impl ChatMessage{
+    fn new(message: String) -> Self {
+        ChatMessage {
+            message,
+            timestamp: SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis() as i64,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 struct Names {
     existing: Arc<Mutex<HashSet<String>>>
 }
@@ -52,7 +69,7 @@ impl Names {
 }
 
 struct Room {
-    tx: Sender<String>,
+    tx: Sender<ChatMessage>,
     users: HashSet<String>
 }
 
@@ -73,7 +90,7 @@ impl Rooms{
     fn new() -> Self {
         return Self(Arc::new(RwLock::new(HashMap::new())));
     }
-    fn join(&self, room_name: &str, user_name: &str) -> Sender<String> {
+    fn join(&self, room_name: &str, user_name: &str) -> Sender<ChatMessage> {
         let mut write_guard = self.0.write().unwrap();
         let room = write_guard.entry(room_name.to_owned()).or_insert(Room::new());
         room.users.insert(user_name.to_owned());
@@ -90,7 +107,7 @@ impl Rooms{
             write_guard.remove(room_name);
         }
     }
-    fn change(&self, prev_room: &str, next_room: &str,  user_name: &str) -> Sender<String> {
+    fn change(&self, prev_room: &str, next_room: &str,  user_name: &str) -> Sender<ChatMessage> {
         self.leave(prev_room, user_name);
         return self.join(next_room, user_name);
     }
@@ -164,15 +181,13 @@ async fn ws_handler(
     })
 }
 
-//make it so that a /rename [ROOM] [NEW_NAME] command can be used to change room names
-
 async fn process(mut socket: WebSocket, rooms: Rooms, existing: Names) -> anyhow::Result<()> {
     let mut user_name = existing.get_unique();
     let mut room_name = MAIN.to_owned();
     let mut tx = rooms.join(&room_name, &user_name);
     let mut rx = tx.subscribe();
 
-    let _ = tx.send(format!("{user_name} has joined the chat."));
+    let _ = tx.send(ChatMessage::new(format!("{user_name} has joined the chat.")));
 
     let _ = socket.send(Message::Text(HELP_MSG.into())).await;
 
@@ -207,12 +222,11 @@ async fn process(mut socket: WebSocket, rooms: Rooms, existing: Names) -> anyhow
                         continue;
                     }
 
-                    b!(tx.send(format!("{user_name} has left {room_name}.")));
+                    b!(tx.send(ChatMessage::new(format!("{user_name} has left {room_name}."))));
                     tx = rooms.change(&room_name, &new_room, &user_name);
                     rx = tx.subscribe();
                     room_name = new_room;
-                    b!(tx.send(format!("{user_name} has joined {room_name}.")));
-
+                    b!(tx.send(ChatMessage::new(format!("{user_name} has joined {room_name}."))));
                 } 
                 else if user_msg.starts_with("/name") {
                     let mut itr = user_msg.split_ascii_whitespace();
@@ -222,8 +236,8 @@ async fn process(mut socket: WebSocket, rooms: Rooms, existing: Names) -> anyhow
                     if changed_name {
                         existing.remove(&user_name);
                         b!(rooms.change_name(&room_name, &user_name, &new_name));
-                        b!(tx.send(format!("{user_name} is now {new_name}")));
-                        b!(tx.send(format!("Current names in room: {:?}", rooms.list_users(&room_name))));
+                        b!(tx.send(ChatMessage::new(format!("{user_name} is now {new_name}"))));
+                        b!(tx.send(ChatMessage::new(format!("Current names in room: {:?}", rooms.list_users(&room_name)))));
                         user_name = new_name;
                     } 
                     else {
@@ -259,7 +273,7 @@ async fn process(mut socket: WebSocket, rooms: Rooms, existing: Names) -> anyhow
                     }
 
                     b!(rooms.change_room_name(&room_name, &new_room_name));
-                    b!(tx.send(format!("Room {room_name} has been renamed to {new_room_name}.")));
+                    b!(tx.send(ChatMessage::new(format!("Room {room_name} has been renamed to {new_room_name}."))));
                     room_name = new_room_name;
                 }
                 else if user_msg.starts_with("/help") {
@@ -269,18 +283,36 @@ async fn process(mut socket: WebSocket, rooms: Rooms, existing: Names) -> anyhow
                     break Ok(());
                 } 
                 else {
-                    b!(tx.send(format!("{user_name}: {user_msg}")));
+                    b!(tx.send(ChatMessage::new(format!("{user_name}: {user_msg}"))));
                 }
             },
 
             peer_msg = rx.recv() => {
                 let peer_msg = b!(peer_msg);
-                b!(socket.send(Message::Text(peer_msg.into())).await);
+                // Send machine-readable JSON so load tests can parse timestamps reliably.
+                // Also keep backwards-compatible text for clients that may expect plain text.
+                match serde_json::to_string(&peer_msg) {
+                    Ok(json) => {
+                        b!(socket.send(Message::Text(json.into())).await);
+                    }
+                    Err(_) => {
+                        // fallback to formatted text (timestamp is milliseconds)
+                        let ts = peer_msg.timestamp as i64;
+                        let secs = ts / 1000;
+                        let nsecs = ((ts % 1000) * 1_000_000) as u32;
+                        let dt = Utc.timestamp_opt(secs, nsecs).single().unwrap();
+                        let formatted_date = dt.format("%Y-%m-%d %H:%M:%S").to_string();
+                        let millis = (ts % 1000).abs();
+                        let formatted_time = format!("{}.{} UTC", formatted_date, format!("{:03}", millis));
+                        let output_msg = format!("[{}] {}", formatted_time, peer_msg.message);
+                        b!(socket.send(Message::Text(output_msg.into())).await);
+                    }
+                }
             },
         }
     };
 
-    let _ = tx.send(format!("{user_name} has left the chat."));
+    let _ = tx.send(ChatMessage::new(format!("{user_name} has left the chat.")));
     existing.remove(&user_name);
     rooms.leave(&room_name, &user_name);
     result

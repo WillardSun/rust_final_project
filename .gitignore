@@ -1,2 +1,3 @@
 /target
 .cloudflared-logs
+ws_config.js
