@@ -1,12 +1,17 @@
+use axum::extract::{
+    State,
+    ws::{Message, WebSocket, WebSocketUpgrade},
+};
 use axum::response::IntoResponse;
+use axum::{Router, routing};
+use bytes::Bytes;
+use chrono::{TimeZone, Utc};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::SystemTime;
 use tokio::net::TcpListener;
 use tokio::sync::broadcast::{self, Sender};
-use std::collections::{HashSet, HashMap};
-use std::sync::{Arc, Mutex, RwLock};
-use std::time::{SystemTime};
-use chrono::{Utc, TimeZone};
-use axum::{routing, Router};
-use axum::extract::{ws::{Message, WebSocket, WebSocketUpgrade}, State};
+use tokio::time;
 
 use rust_final_project::random_name;
 
@@ -28,23 +33,28 @@ struct ChatMessage {
     timestamp: i64,
 }
 
-impl ChatMessage{
+impl ChatMessage {
     fn new(message: String) -> Self {
         ChatMessage {
             message,
-            timestamp: SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis() as i64,
+            timestamp: SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64,
         }
     }
 }
 
 #[derive(Clone, Debug)]
 struct Names {
-    existing: Arc<Mutex<HashSet<String>>>
+    existing: Arc<Mutex<HashSet<String>>>,
 }
 
 impl Names {
-    fn new () -> Self {
-        return Names { existing: Arc::new(Mutex::new(HashSet::new())) }
+    fn new() -> Self {
+        return Names {
+            existing: Arc::new(Mutex::new(HashSet::new())),
+        };
     }
     fn insert(&self, str: String) -> bool {
         return self.existing.lock().unwrap().insert(str);
@@ -70,7 +80,7 @@ impl Names {
 
 struct Room {
     tx: Sender<ChatMessage>,
-    users: HashSet<String>
+    users: HashSet<String>,
 }
 
 impl Room {
@@ -79,27 +89,29 @@ impl Room {
         let users = HashSet::new();
         return Self {
             tx: tx,
-            users: users
-        }
+            users: users,
+        };
     }
 }
 
 #[derive(Clone)]
 struct Rooms(Arc<RwLock<HashMap<String, Room>>>);
-impl Rooms{
+impl Rooms {
     fn new() -> Self {
         return Self(Arc::new(RwLock::new(HashMap::new())));
     }
     fn join(&self, room_name: &str, user_name: &str) -> Sender<ChatMessage> {
         let mut write_guard = self.0.write().unwrap();
-        let room = write_guard.entry(room_name.to_owned()).or_insert(Room::new());
+        let room = write_guard
+            .entry(room_name.to_owned())
+            .or_insert(Room::new());
         room.users.insert(user_name.to_owned());
         return room.tx.clone();
     }
     fn leave(&self, room_name: &str, user_name: &str) {
         let mut write_guard = self.0.write().unwrap();
         let mut delete_room = false;
-        if let Some(room) = write_guard.get_mut(room_name){
+        if let Some(room) = write_guard.get_mut(room_name) {
             room.users.remove(user_name);
             delete_room = room.tx.receiver_count() <= 1;
         }
@@ -107,7 +119,7 @@ impl Rooms{
             write_guard.remove(room_name);
         }
     }
-    fn change(&self, prev_room: &str, next_room: &str,  user_name: &str) -> Sender<ChatMessage> {
+    fn change(&self, prev_room: &str, next_room: &str, user_name: &str) -> Sender<ChatMessage> {
         self.leave(prev_room, user_name);
         return self.join(next_room, user_name);
     }
@@ -117,8 +129,7 @@ impl Rooms{
             room.users.remove(old_name);
             room.users.insert(new_name.to_owned());
             Ok(())
-        }
-        else {
+        } else {
             Err(anyhow::anyhow!("User not found"))
         }
     }
@@ -127,8 +138,7 @@ impl Rooms{
         if let Some(room) = write_guard.remove(old_name) {
             write_guard.insert(new_name.to_owned(), room);
             Ok(())
-        }
-        else {
+        } else {
             Err(anyhow::anyhow!("Room not found"))
         }
     }
@@ -162,7 +172,7 @@ async fn main() -> anyhow::Result<()> {
     let rooms = Rooms::new();
     let names = Names::new();
 
-    let app= Router::new()
+    let app = Router::new()
         .route("/ws", routing::any(ws_handler))
         .with_state((rooms, names));
 
@@ -187,9 +197,14 @@ async fn process(mut socket: WebSocket, rooms: Rooms, existing: Names) -> anyhow
     let mut tx = rooms.join(&room_name, &user_name);
     let mut rx = tx.subscribe();
 
-    let _ = tx.send(ChatMessage::new(format!("{user_name} has joined the chat.")));
+    let _ = tx.send(ChatMessage::new(format!(
+        "{user_name} has joined the chat."
+    )));
 
     let _ = socket.send(Message::Text(HELP_MSG.into())).await;
+
+    let mut heartbeat = time::interval(time::Duration::from_secs(15));
+    heartbeat.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
 
     // main loop returns Result so `b!` can break with Err
     let result: anyhow::Result<()> = loop {
@@ -203,11 +218,11 @@ async fn process(mut socket: WebSocket, rooms: Rooms, existing: Names) -> anyhow
                 let user_msg = match msg {
                     Message::Text(t) => t,
                     Message::Binary(_) => continue,
-                    Message::Ping(p) => {
-                        b!(socket.send(Message::Pong(p)).await);
+                    Message::Ping(_) => continue,
+                    Message::Pong(_) => {
+                        b!(socket.send(Message::Text(format!("Received pong from {}", user_name).into())).await);
                         continue;
                     }
-                    Message::Pong(_) => continue,
                     Message::Close(_) => break Ok(()),
                 };
 
@@ -227,7 +242,7 @@ async fn process(mut socket: WebSocket, rooms: Rooms, existing: Names) -> anyhow
                     rx = tx.subscribe();
                     room_name = new_room;
                     b!(tx.send(ChatMessage::new(format!("{user_name} has joined {room_name}."))));
-                } 
+                }
                 else if user_msg.starts_with("/name") {
                     let mut itr = user_msg.split_ascii_whitespace();
                     itr.next();
@@ -239,19 +254,19 @@ async fn process(mut socket: WebSocket, rooms: Rooms, existing: Names) -> anyhow
                         b!(tx.send(ChatMessage::new(format!("{user_name} is now {new_name}"))));
                         b!(tx.send(ChatMessage::new(format!("Current names in room: {:?}", rooms.list_users(&room_name)))));
                         user_name = new_name;
-                    } 
+                    }
                     else {
                         b!(socket.send(Message::Text("Sorry, that name is taken.".into())).await);
                     }
-                } 
+                }
                 else if user_msg.starts_with("/allusers") {
                     let users_str = format!("All users: {:?}", existing.get_existing());
                     b!(socket.send(Message::Text(users_str.into())).await);
-                } 
+                }
                 else if user_msg.starts_with("/users") {
                     let users_str = format!("Users in current room: {:?}", rooms.list_users(&room_name));
                     b!(socket.send(Message::Text(users_str.into())).await);
-                } 
+                }
                 else if user_msg.starts_with("/rooms") {
                     let rooms_list = rooms
                         .get_existing()
@@ -261,7 +276,7 @@ async fn process(mut socket: WebSocket, rooms: Rooms, existing: Names) -> anyhow
                         .join(", ");
                     let rooms_str = format!("Current rooms: {rooms_list}");
                     b!(socket.send(Message::Text(rooms_str.into())).await);
-                } 
+                }
                 else if user_msg.starts_with("/renameroom ") {
                     let mut itr = user_msg.split_ascii_whitespace();
                     itr.next();
@@ -278,10 +293,10 @@ async fn process(mut socket: WebSocket, rooms: Rooms, existing: Names) -> anyhow
                 }
                 else if user_msg.starts_with("/help") {
                     b!(socket.send(Message::Text(HELP_MSG.into())).await);
-                } 
+                }
                 else if user_msg.starts_with("/quit") {
                     break Ok(());
-                } 
+                }
                 else {
                     b!(tx.send(ChatMessage::new(format!("{user_name}: {user_msg}"))));
                 }
@@ -289,8 +304,7 @@ async fn process(mut socket: WebSocket, rooms: Rooms, existing: Names) -> anyhow
 
             peer_msg = rx.recv() => {
                 let peer_msg = b!(peer_msg);
-                // Send machine-readable JSON so load tests can parse timestamps reliably.
-                // Also keep backwards-compatible text for clients that may expect plain text.
+                // Send machine-readable JSON so load tests can parse timestamps reliably
                 match serde_json::to_string(&peer_msg) {
                     Ok(json) => {
                         b!(socket.send(Message::Text(json.into())).await);
@@ -309,6 +323,9 @@ async fn process(mut socket: WebSocket, rooms: Rooms, existing: Names) -> anyhow
                     }
                 }
             },
+            _ = heartbeat.tick() => {
+                b!(socket.send(Message::Ping(Bytes::from("ping"))).await);
+            }
         }
     };
 
