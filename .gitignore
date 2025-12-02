@@ -1,3 +1,4 @@
 /target
 .cloudflared-logs
+.venv
 ws_config.js
