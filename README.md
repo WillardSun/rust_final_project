@@ -1,4 +1,4 @@
-# Final project for CIS 1905
+# Chatski
 
 ## Multi-Room WebSocket Chat Server
 
